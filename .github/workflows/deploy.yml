@@ -189,11 +189,59 @@ jobs:
             --service "${ECS_SERVICE}" \
             --task-definition "${TASK_DEFINITION_ARN}"
 
-      - name: Wait for ECS service stability
+      - name: Wait for ECS deployment completion
+        shell: bash
         run: |
-          aws ecs wait services-stable \
+          MAX_ATTEMPTS=60
+          SLEEP_SECONDS=15
+
+          for attempt in $(seq 1 "${MAX_ATTEMPTS}"); do
+            ROLLOUT_STATE=$(aws ecs describe-services \
+              --cluster "${ECS_CLUSTER}" \
+              --services "${ECS_SERVICE}" \
+              --query 'services[0].deployments[?status==`PRIMARY`].rolloutState | [0]' \
+              --output text)
+
+            RUNNING=$(aws ecs describe-services \
+              --cluster "${ECS_CLUSTER}" \
+              --services "${ECS_SERVICE}" \
+              --query 'services[0].runningCount' \
+              --output text)
+
+            DESIRED=$(aws ecs describe-services \
+              --cluster "${ECS_CLUSTER}" \
+              --services "${ECS_SERVICE}" \
+              --query 'services[0].desiredCount' \
+              --output text)
+
+            echo "Attempt ${attempt}/${MAX_ATTEMPTS}: rollout=${ROLLOUT_STATE}, running=${RUNNING}/${DESIRED}"
+
+            if [ "${ROLLOUT_STATE}" = "COMPLETED" ] && [ "${RUNNING}" = "${DESIRED}" ]; then
+              echo "ECS deployment completed successfully."
+              exit 0
+            fi
+
+            if [ "${ROLLOUT_STATE}" = "FAILED" ]; then
+              echo "ECS deployment failed or was rolled back."
+              aws ecs describe-services \
+                --cluster "${ECS_CLUSTER}" \
+                --services "${ECS_SERVICE}" \
+                --query 'services[0].events[0:10].[createdAt,message]' \
+                --output table
+              exit 1
+            fi
+
+            sleep "${SLEEP_SECONDS}"
+          done
+
+          echo "Timed out waiting for ECS deployment after 15 minutes."
+          aws ecs describe-services \
             --cluster "${ECS_CLUSTER}" \
-            --services "${ECS_SERVICE}"
+            --services "${ECS_SERVICE}" \
+            --query 'services[0].events[0:10].[createdAt,message]' \
+            --output table
+
+          exit 1
 
       - name: Confirm deployment was not rolled back
         shell: bash
