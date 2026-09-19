@@ -185,3 +185,16 @@ jobs:
             --cluster "${ECS_CLUSTER}" \
             --services "${ECS_SERVICE}" \
             --query 'services[0].{Status:status,Desired:desiredCount,Running:runningCount,Pending:pendingCount,TaskDefinition:taskDefinition}'
+
+  production-approval:
+    name: Production Approval
+    needs: deploy
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+
+    steps:
+      - name: Production deployment approved
+        run: |
+          echo "Production approval granted."
+          echo "Commit: ${GITHUB_SHA}"
