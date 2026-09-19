@@ -60,6 +60,60 @@ jobs:
 
           echo "image=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
 
+      - name: ECR vulnerability gate
+        shell: bash
+        run: |
+          echo "Waiting for ECR vulnerability scan for image ${GITHUB_SHA}..."
+
+          MAX_ATTEMPTS=20
+          SLEEP_SECONDS=15
+
+          for attempt in $(seq 1 "${MAX_ATTEMPTS}"); do
+            echo "Scan check ${attempt}/${MAX_ATTEMPTS}"
+
+            STATUS=$(aws ecr describe-image-scan-findings               --region "${AWS_REGION}"               --repository-name "${ECR_REPOSITORY}"               --image-id imageTag="${GITHUB_SHA}"               --query 'imageScanStatus.status'               --output text 2>/dev/null || true)
+
+            if [ "${STATUS}" = "COMPLETE" ]; then
+              echo "ECR scan completed."
+              break
+            fi
+
+            if [ "${STATUS}" = "FAILED" ]; then
+              echo "ECR vulnerability scan failed."
+              exit 1
+            fi
+
+            if [ "${attempt}" -eq "${MAX_ATTEMPTS}" ]; then
+              echo "Timed out waiting for ECR vulnerability scan."
+              exit 1
+            fi
+
+            echo "Current scan status: ${STATUS:-not-ready}"
+            sleep "${SLEEP_SECONDS}"
+          done
+
+          CRITICAL=$(aws ecr describe-image-scan-findings             --region "${AWS_REGION}"             --repository-name "${ECR_REPOSITORY}"             --image-id imageTag="${GITHUB_SHA}"             --query 'imageScanFindings.findingSeverityCounts.CRITICAL'             --output text)
+
+          HIGH=$(aws ecr describe-image-scan-findings             --region "${AWS_REGION}"             --repository-name "${ECR_REPOSITORY}"             --image-id imageTag="${GITHUB_SHA}"             --query 'imageScanFindings.findingSeverityCounts.HIGH'             --output text)
+
+          if [ "${CRITICAL}" = "None" ] || [ -z "${CRITICAL}" ]; then
+            CRITICAL=0
+          fi
+
+          if [ "${HIGH}" = "None" ] || [ -z "${HIGH}" ]; then
+            HIGH=0
+          fi
+
+          echo "CRITICAL findings: ${CRITICAL}"
+          echo "HIGH findings: ${HIGH}"
+
+          if [ "${CRITICAL}" -gt 0 ]; then
+            echo "SECURITY GATE FAILED: ${CRITICAL} CRITICAL vulnerabilities detected."
+            exit 1
+          fi
+
+          echo "Security gate passed: no CRITICAL vulnerabilities detected."
+
       - name: Download current ECS task definition
         run: |
           aws ecs describe-task-definition \
