@@ -1,0 +1,66 @@
+name: Terraform CI
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "terraform/**"
+      - ".github/workflows/terraform-ci.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: eu-west-2
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TERRAFORM_ROLE_ARN: arn:aws:iam::808935753572:role/aws-devops-platform-dev-terraform-ci-role
+
+jobs:
+  terraform:
+    name: Terraform Validate and Plan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.TERRAFORM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.9
+
+      - name: Terraform format check
+        run: terraform -chdir=terraform/environments/dev fmt -check -recursive
+
+      - name: Terraform init
+        run: terraform -chdir=terraform/environments/dev init
+
+      - name: Terraform validate
+        run: terraform -chdir=terraform/environments/dev validate
+
+      - name: Terraform plan
+        run: |
+          terraform -chdir=terraform/environments/dev plan \
+            -lock-timeout=60s \
+            -no-color \
+            -out=tfplan
+
+      - name: Show Terraform plan summary
+        run: |
+          terraform -chdir=terraform/environments/dev show \
+            -no-color \
+            tfplan > terraform-plan.txt
+
+          tail -80 terraform/environments/dev/terraform-plan.txt
