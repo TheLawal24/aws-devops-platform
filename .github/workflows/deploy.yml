@@ -1,0 +1,118 @@
+name: Build and Deploy to ECS
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: eu-west-2
+  ECR_REPOSITORY: aws-devops-platform-dev
+  ECS_CLUSTER: aws-devops-platform-dev-cluster
+  ECS_SERVICE: aws-devops-platform-dev-service
+  TASK_FAMILY: aws-devops-platform-dev
+  CONTAINER_NAME: app
+  AWS_ROLE_ARN: arn:aws:iam::808935753572:role/aws-devops-platform-dev-github-actions-role
+
+jobs:
+  deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push immutable Docker image
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+
+          docker buildx build \
+            --platform linux/amd64 \
+            --provenance=false \
+            --sbom=false \
+            --load \
+            -t "${IMAGE_URI}" \
+            ./app
+
+          docker push "${IMAGE_URI}"
+
+          echo "image=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
+
+      - name: Download current ECS task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "${TASK_FAMILY}" \
+            --query taskDefinition \
+            > task-definition.json
+
+      - name: Create new task definition revision
+        env:
+          IMAGE_URI: ${{ steps.build-image.outputs.image }}
+        run: |
+          jq \
+            --arg IMAGE "${IMAGE_URI}" \
+            --arg CONTAINER "${CONTAINER_NAME}" \
+            '
+            del(
+              .taskDefinitionArn,
+              .revision,
+              .status,
+              .requiresAttributes,
+              .compatibilities,
+              .registeredAt,
+              .registeredBy
+            )
+            |
+            (.containerDefinitions[] | select(.name == $CONTAINER) | .image) = $IMAGE
+            ' \
+            task-definition.json > task-definition-new.json
+
+          aws ecs register-task-definition \
+            --cli-input-json file://task-definition-new.json \
+            > registered-task-definition.json
+
+          TASK_DEFINITION_ARN=$(jq -r '.taskDefinition.taskDefinitionArn' registered-task-definition.json)
+
+          echo "TASK_DEFINITION_ARN=${TASK_DEFINITION_ARN}" >> "$GITHUB_ENV"
+
+      - name: Deploy new task definition
+        run: |
+          aws ecs update-service \
+            --cluster "${ECS_CLUSTER}" \
+            --service "${ECS_SERVICE}" \
+            --task-definition "${TASK_DEFINITION_ARN}"
+
+      - name: Wait for ECS service stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster "${ECS_CLUSTER}" \
+            --services "${ECS_SERVICE}"
+
+      - name: Verify deployed service
+        run: |
+          aws ecs describe-services \
+            --cluster "${ECS_CLUSTER}" \
+            --services "${ECS_SERVICE}" \
+            --query 'services[0].{Status:status,Desired:desiredCount,Running:runningCount,Pending:pendingCount,TaskDefinition:taskDefinition}'
