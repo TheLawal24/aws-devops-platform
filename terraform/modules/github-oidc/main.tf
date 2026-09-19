@@ -28,7 +28,8 @@ data "aws_iam_policy_document" "github_assume_role" {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
       values = [
-        "repo:TheLawal24@147694818/aws-devops-platform@1377097712:ref:refs/heads/main"
+        "repo:TheLawal24@147694818/aws-devops-platform@1377097712:ref:refs/heads/main",
+        "repo:TheLawal24@147694818/aws-devops-platform@1377097712:environment:production"
       ]
     }
   }
