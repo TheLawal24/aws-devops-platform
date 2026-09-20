@@ -63,4 +63,4 @@ jobs:
             -no-color \
             tfplan > terraform-plan.txt
 
-          tail -80 terraform/environments/dev/terraform-plan.txt
+          tail -80 terraform-plan.txt
