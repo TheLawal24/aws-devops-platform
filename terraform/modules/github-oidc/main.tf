@@ -6,7 +6,7 @@ resource "aws_iam_openid_connect_provider" "github" {
   ]
 }
 
-data "aws_iam_policy_document" "github_assume_role" {
+data "aws_iam_policy_document" "github_deploy_assume_role" {
   statement {
     effect  = "Allow"
     actions = ["sts:AssumeRoleWithWebIdentity"]
@@ -29,8 +29,7 @@ data "aws_iam_policy_document" "github_assume_role" {
       variable = "token.actions.githubusercontent.com:sub"
       values = [
         "repo:TheLawal24@147694818/aws-devops-platform@1377097712:ref:refs/heads/main",
-        "repo:TheLawal24@147694818/aws-devops-platform@1377097712:environment:production",
-        "repo:TheLawal24@147694818/aws-devops-platform@1377097712:pull_request"
+        "repo:TheLawal24@147694818/aws-devops-platform@1377097712:environment:production"
       ]
     }
   }
@@ -39,7 +38,7 @@ data "aws_iam_policy_document" "github_assume_role" {
 resource "aws_iam_role" "github_actions" {
   name = "${var.project_name}-${var.environment}-github-actions-role"
 
-  assume_role_policy = data.aws_iam_policy_document.github_assume_role.json
+  assume_role_policy = data.aws_iam_policy_document.github_deploy_assume_role.json
 
   tags = {
     Name = "${var.project_name}-${var.environment}-github-actions-role"

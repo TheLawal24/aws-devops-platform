@@ -1,0 +1,85 @@
+name: Terraform Apply
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: eu-west-2
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TERRAFORM_ROLE_ARN: arn:aws:iam::808935753572:role/aws-devops-platform-dev-terraform-apply-role
+
+jobs:
+  apply:
+    name: Approved Terraform Apply
+    runs-on: ubuntu-latest
+
+    environment:
+      name: infrastructure
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.TERRAFORM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.9
+
+      - name: Terraform format check
+        run: terraform -chdir=terraform/environments/dev fmt -check -recursive
+
+      - name: Terraform init
+        run: terraform -chdir=terraform/environments/dev init
+
+      - name: Terraform validate
+        run: terraform -chdir=terraform/environments/dev validate
+
+      - name: Terraform plan
+        run: |
+          terraform -chdir=terraform/environments/dev plan \
+            -lock-timeout=60s \
+            -out=tfplan
+
+      - name: Terraform apply
+        run: |
+          terraform -chdir=terraform/environments/dev apply \
+            -lock-timeout=60s \
+            -auto-approve \
+            tfplan
+
+      - name: Verify final state
+        run: |
+          set +e
+
+          terraform -chdir=terraform/environments/dev plan \
+            -detailed-exitcode \
+            -no-color
+
+          EXIT_CODE=$?
+
+          if [ "${EXIT_CODE}" -eq 0 ]; then
+            echo "Infrastructure matches Terraform configuration."
+            exit 0
+          elif [ "${EXIT_CODE}" -eq 2 ]; then
+            echo "Unexpected infrastructure drift remains after apply."
+            exit 1
+          else
+            echo "Terraform verification failed."
+            exit "${EXIT_CODE}"
+          fi
