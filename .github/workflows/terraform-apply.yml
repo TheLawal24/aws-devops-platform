@@ -1,12 +1,7 @@
-name: Terraform CI
+name: Terraform Apply
 
 on:
-  pull_request:
-    branches:
-      - main
-    paths:
-      - "terraform/**"
-      - ".github/workflows/terraform-ci.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,16 +11,21 @@ env:
   AWS_REGION: eu-west-2
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
-  TERRAFORM_ROLE_ARN: arn:aws:iam::808935753572:role/aws-devops-platform-dev-terraform-ci-role
+  TERRAFORM_ROLE_ARN: arn:aws:iam::808935753572:role/aws-devops-platform-dev-terraform-apply-role
 
 jobs:
-  terraform:
-    name: Terraform Validate and Plan
+  apply:
+    name: Approved Terraform Apply
     runs-on: ubuntu-latest
 
+    environment:
+      name: infrastructure
+
     steps:
-      - name: Checkout repository
+      - name: Checkout main
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Configure AWS credentials with OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -54,13 +54,32 @@ jobs:
         run: |
           terraform -chdir=terraform/environments/dev plan \
             -lock-timeout=60s \
-            -no-color \
             -out=tfplan
 
-      - name: Show Terraform plan summary
+      - name: Terraform apply
         run: |
-          terraform -chdir=terraform/environments/dev show \
-            -no-color \
-            tfplan > terraform-plan.txt
+          terraform -chdir=terraform/environments/dev apply \
+            -lock-timeout=60s \
+            -auto-approve \
+            tfplan
 
-          tail -80 terraform-plan.txt
+      - name: Verify final state
+        run: |
+          set +e
+
+          terraform -chdir=terraform/environments/dev plan \
+            -detailed-exitcode \
+            -no-color
+
+          EXIT_CODE=$?
+
+          if [ "${EXIT_CODE}" -eq 0 ]; then
+            echo "Infrastructure matches Terraform configuration."
+            exit 0
+          elif [ "${EXIT_CODE}" -eq 2 ]; then
+            echo "Unexpected infrastructure drift remains after apply."
+            exit 1
+          else
+            echo "Terraform verification failed."
+            exit "${EXIT_CODE}"
+          fi

@@ -78,6 +78,12 @@ resource "aws_ecs_service" "app" {
     aws_lb_listener.http
   ]
 
+  lifecycle {
+    ignore_changes = [
+      task_definition
+    ]
+  }
+
   tags = {
     Name = "${var.project_name}-${var.environment}-service"
   }
