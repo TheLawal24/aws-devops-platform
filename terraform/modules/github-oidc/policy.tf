@@ -58,6 +58,17 @@ data "aws_iam_policy_document" "github_actions" {
   }
 
   statement {
+    sid    = "ELBRead"
+    effect = "Allow"
+
+    actions = [
+      "elasticloadbalancing:DescribeLoadBalancers"
+    ]
+
+    resources = ["*"]
+  }
+
+  statement {
     sid    = "PassECSTaskRoles"
     effect = "Allow"
 
