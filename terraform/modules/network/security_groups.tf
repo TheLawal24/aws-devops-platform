@@ -49,3 +49,13 @@ resource "aws_security_group" "ecs" {
     Name = "${var.project_name}-${var.environment}-ecs-sg"
   }
 }
+
+resource "aws_vpc_security_group_ingress_rule" "alb_staging_http" {
+  security_group_id = aws_security_group.alb.id
+
+  description = "Staging HTTP access"
+  from_port   = 8088
+  to_port     = 8088
+  ip_protocol = "tcp"
+  cidr_ipv4   = "0.0.0.0/0"
+}

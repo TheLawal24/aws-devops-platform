@@ -33,3 +33,7 @@ output "load_balancer_arn_suffix" {
 output "target_group_arn_suffix" {
   value = aws_lb_target_group.app.arn_suffix
 }
+
+output "load_balancer_arn" {
+  value = aws_lb.app.arn
+}
