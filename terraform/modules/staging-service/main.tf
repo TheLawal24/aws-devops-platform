@@ -131,6 +131,12 @@ resource "aws_ecs_service" "staging" {
     aws_lb_listener.staging
   ]
 
+  lifecycle {
+    ignore_changes = [
+      task_definition
+    ]
+  }
+
   tags = {
     Name        = "${var.project_name}-staging-service"
     Environment = "staging"
