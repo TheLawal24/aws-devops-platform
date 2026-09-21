@@ -3,14 +3,6 @@ resource "aws_security_group" "alb" {
   description = "Allow HTTP traffic to the application load balancer"
   vpc_id      = aws_vpc.main.id
 
-  ingress {
-    description = "HTTP from internet"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
   egress {
     description = "Allow outbound traffic"
     from_port   = 0
@@ -22,6 +14,26 @@ resource "aws_security_group" "alb" {
   tags = {
     Name = "${var.project_name}-${var.environment}-alb-sg"
   }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "alb_http" {
+  security_group_id = aws_security_group.alb.id
+
+  description = "HTTP from internet"
+  from_port   = 80
+  to_port     = 80
+  ip_protocol = "tcp"
+  cidr_ipv4   = "0.0.0.0/0"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "alb_staging_http" {
+  security_group_id = aws_security_group.alb.id
+
+  description = "Staging HTTP access"
+  from_port   = 8088
+  to_port     = 8088
+  ip_protocol = "tcp"
+  cidr_ipv4   = "0.0.0.0/0"
 }
 
 resource "aws_security_group" "ecs" {
@@ -48,14 +60,4 @@ resource "aws_security_group" "ecs" {
   tags = {
     Name = "${var.project_name}-${var.environment}-ecs-sg"
   }
-}
-
-resource "aws_vpc_security_group_ingress_rule" "alb_staging_http" {
-  security_group_id = aws_security_group.alb.id
-
-  description = "Staging HTTP access"
-  from_port   = 8088
-  to_port     = 8088
-  ip_protocol = "tcp"
-  cidr_ipv4   = "0.0.0.0/0"
 }

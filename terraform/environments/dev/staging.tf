@@ -14,6 +14,6 @@ module "staging" {
   execution_role_arn = module.iam.ecs_task_execution_role_arn
   task_role_arn      = module.iam.ecs_task_role_arn
 
-  container_image = "${module.ecr.repository_url}:v4"
+  container_image = "808935753572.dkr.ecr.eu-west-2.amazonaws.com/aws-devops-platform-dev:ec0881e7896b53088592128b418f6dbd36cccd98"
   container_port  = 8080
 }
