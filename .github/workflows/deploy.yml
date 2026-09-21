@@ -13,9 +13,17 @@ env:
   AWS_REGION: eu-west-2
   ECR_REPOSITORY: aws-devops-platform-dev
   ECS_CLUSTER: aws-devops-platform-dev-cluster
-  ECS_SERVICE: aws-devops-platform-dev-service
-  TASK_FAMILY: aws-devops-platform-dev
+
+  STAGING_SERVICE: aws-devops-platform-staging-service
+  STAGING_TASK_FAMILY: aws-devops-platform-staging
+
+  PRODUCTION_SERVICE: aws-devops-platform-dev-service
+  PRODUCTION_TASK_FAMILY: aws-devops-platform-dev
+
   CONTAINER_NAME: app
+  ALB_NAME: aws-devops-platform-dev-alb
+  STAGING_PORT: "8088"
+
   AWS_ROLE_ARN: arn:aws:iam::808935753572:role/aws-devops-platform-dev-github-actions-role
 
 jobs:
@@ -125,9 +133,175 @@ jobs:
 
           echo "Security gate passed."
 
+  deploy-staging:
+    name: Deploy to Staging
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify staging image
+        run: |
+          echo "Staging image:"
+          echo "${{ needs.build.outputs.image_uri }}"
+
+      - name: Download current staging task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "${STAGING_TASK_FAMILY}" \
+            --query taskDefinition \
+            > staging-task-definition.json
+
+      - name: Create new staging task definition revision
+        env:
+          IMAGE_URI: ${{ needs.build.outputs.image_uri }}
+        run: |
+          jq \
+            --arg IMAGE "${IMAGE_URI}" \
+            --arg CONTAINER "${CONTAINER_NAME}" \
+            '
+            del(
+              .taskDefinitionArn,
+              .revision,
+              .status,
+              .requiresAttributes,
+              .compatibilities,
+              .registeredAt,
+              .registeredBy
+            )
+            |
+            (.containerDefinitions[] | select(.name == $CONTAINER) | .image) = $IMAGE
+            ' \
+            staging-task-definition.json > staging-task-definition-new.json
+
+          aws ecs register-task-definition \
+            --cli-input-json file://staging-task-definition-new.json \
+            > staging-registered-task-definition.json
+
+          STAGING_TASK_DEFINITION_ARN=$(jq -r '.taskDefinition.taskDefinitionArn' staging-registered-task-definition.json)
+
+          echo "STAGING_TASK_DEFINITION_ARN=${STAGING_TASK_DEFINITION_ARN}" >> "$GITHUB_ENV"
+
+      - name: Deploy to staging
+        run: |
+          aws ecs update-service \
+            --cluster "${ECS_CLUSTER}" \
+            --service "${STAGING_SERVICE}" \
+            --task-definition "${STAGING_TASK_DEFINITION_ARN}"
+
+      - name: Wait for staging deployment completion
+        shell: bash
+        run: |
+          MAX_ATTEMPTS=60
+          SLEEP_SECONDS=15
+
+          for attempt in $(seq 1 "${MAX_ATTEMPTS}"); do
+            ROLLOUT_STATE=$(aws ecs describe-services \
+              --cluster "${ECS_CLUSTER}" \
+              --services "${STAGING_SERVICE}" \
+              --query 'services[0].deployments[?status==`PRIMARY`].rolloutState | [0]' \
+              --output text)
+
+            RUNNING=$(aws ecs describe-services \
+              --cluster "${ECS_CLUSTER}" \
+              --services "${STAGING_SERVICE}" \
+              --query 'services[0].runningCount' \
+              --output text)
+
+            DESIRED=$(aws ecs describe-services \
+              --cluster "${ECS_CLUSTER}" \
+              --services "${STAGING_SERVICE}" \
+              --query 'services[0].desiredCount' \
+              --output text)
+
+            echo "Attempt ${attempt}/${MAX_ATTEMPTS}: rollout=${ROLLOUT_STATE}, running=${RUNNING}/${DESIRED}"
+
+            if [ "${ROLLOUT_STATE}" = "COMPLETED" ] && [ "${RUNNING}" = "${DESIRED}" ]; then
+              echo "Staging ECS deployment completed successfully."
+              exit 0
+            fi
+
+            if [ "${ROLLOUT_STATE}" = "FAILED" ]; then
+              echo "Staging deployment failed or rolled back."
+
+              aws ecs describe-services \
+                --cluster "${ECS_CLUSTER}" \
+                --services "${STAGING_SERVICE}" \
+                --query 'services[0].events[0:10].[createdAt,message]' \
+                --output table
+
+              exit 1
+            fi
+
+            sleep "${SLEEP_SECONDS}"
+          done
+
+          echo "Timed out waiting for staging deployment."
+
+          aws ecs describe-services \
+            --cluster "${ECS_CLUSTER}" \
+            --services "${STAGING_SERVICE}" \
+            --query 'services[0].events[0:10].[createdAt,message]' \
+            --output table
+
+          exit 1
+
+      - name: Confirm staging was not rolled back
+        shell: bash
+        run: |
+          DEPLOYED_TASK_DEFINITION=$(aws ecs describe-services \
+            --cluster "${ECS_CLUSTER}" \
+            --services "${STAGING_SERVICE}" \
+            --query 'services[0].deployments[?status==`PRIMARY`].taskDefinition | [0]' \
+            --output text)
+
+          echo "Expected: ${STAGING_TASK_DEFINITION_ARN}"
+          echo "Running:  ${DEPLOYED_TASK_DEFINITION}"
+
+          if [ "${DEPLOYED_TASK_DEFINITION}" != "${STAGING_TASK_DEFINITION_ARN}" ]; then
+            echo "STAGING DEPLOYMENT FAILED: ECS rolled back."
+            exit 1
+          fi
+
+          echo "Staging deployment confirmed."
+
+      - name: Test staging health endpoint
+        shell: bash
+        run: |
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --names "${ALB_NAME}" \
+            --query 'LoadBalancers[0].DNSName' \
+            --output text)
+
+          STAGING_URL="http://${ALB_DNS}:${STAGING_PORT}"
+
+          echo "Testing ${STAGING_URL}/health"
+
+          for attempt in $(seq 1 12); do
+            if curl --fail --silent --show-error \
+              "${STAGING_URL}/health"; then
+              echo
+              echo "Staging health check passed."
+              exit 0
+            fi
+
+            echo "Health attempt ${attempt}/12 failed. Retrying..."
+            sleep 10
+          done
+
+          echo "Staging health check failed."
+          exit 1
+
   deploy-production:
     name: Deploy to Production
-    needs: build
+    needs:
+      - build
+      - deploy-staging
     runs-on: ubuntu-latest
 
     environment:
@@ -145,12 +319,12 @@ jobs:
           echo "Approved production image:"
           echo "${{ needs.build.outputs.image_uri }}"
 
-      - name: Download current ECS task definition
+      - name: Download current production task definition
         run: |
           aws ecs describe-task-definition \
-            --task-definition "${TASK_FAMILY}" \
+            --task-definition "${PRODUCTION_TASK_FAMILY}" \
             --query taskDefinition \
-            > task-definition.json
+            > production-task-definition.json
 
       - name: Create new production task definition revision
         env:
@@ -172,24 +346,24 @@ jobs:
             |
             (.containerDefinitions[] | select(.name == $CONTAINER) | .image) = $IMAGE
             ' \
-            task-definition.json > task-definition-new.json
+            production-task-definition.json > production-task-definition-new.json
 
           aws ecs register-task-definition \
-            --cli-input-json file://task-definition-new.json \
-            > registered-task-definition.json
+            --cli-input-json file://production-task-definition-new.json \
+            > production-registered-task-definition.json
 
-          TASK_DEFINITION_ARN=$(jq -r '.taskDefinition.taskDefinitionArn' registered-task-definition.json)
+          PRODUCTION_TASK_DEFINITION_ARN=$(jq -r '.taskDefinition.taskDefinitionArn' production-registered-task-definition.json)
 
-          echo "TASK_DEFINITION_ARN=${TASK_DEFINITION_ARN}" >> "$GITHUB_ENV"
+          echo "PRODUCTION_TASK_DEFINITION_ARN=${PRODUCTION_TASK_DEFINITION_ARN}" >> "$GITHUB_ENV"
 
       - name: Deploy approved task definition
         run: |
           aws ecs update-service \
             --cluster "${ECS_CLUSTER}" \
-            --service "${ECS_SERVICE}" \
-            --task-definition "${TASK_DEFINITION_ARN}"
+            --service "${PRODUCTION_SERVICE}" \
+            --task-definition "${PRODUCTION_TASK_DEFINITION_ARN}"
 
-      - name: Wait for ECS deployment completion
+      - name: Wait for production deployment completion
         shell: bash
         run: |
           MAX_ATTEMPTS=60
@@ -198,73 +372,77 @@ jobs:
           for attempt in $(seq 1 "${MAX_ATTEMPTS}"); do
             ROLLOUT_STATE=$(aws ecs describe-services \
               --cluster "${ECS_CLUSTER}" \
-              --services "${ECS_SERVICE}" \
+              --services "${PRODUCTION_SERVICE}" \
               --query 'services[0].deployments[?status==`PRIMARY`].rolloutState | [0]' \
               --output text)
 
             RUNNING=$(aws ecs describe-services \
               --cluster "${ECS_CLUSTER}" \
-              --services "${ECS_SERVICE}" \
+              --services "${PRODUCTION_SERVICE}" \
               --query 'services[0].runningCount' \
               --output text)
 
             DESIRED=$(aws ecs describe-services \
               --cluster "${ECS_CLUSTER}" \
-              --services "${ECS_SERVICE}" \
+              --services "${PRODUCTION_SERVICE}" \
               --query 'services[0].desiredCount' \
               --output text)
 
             echo "Attempt ${attempt}/${MAX_ATTEMPTS}: rollout=${ROLLOUT_STATE}, running=${RUNNING}/${DESIRED}"
 
             if [ "${ROLLOUT_STATE}" = "COMPLETED" ] && [ "${RUNNING}" = "${DESIRED}" ]; then
-              echo "ECS deployment completed successfully."
+              echo "Production ECS deployment completed successfully."
               exit 0
             fi
 
             if [ "${ROLLOUT_STATE}" = "FAILED" ]; then
-              echo "ECS deployment failed or was rolled back."
+              echo "Production deployment failed or rolled back."
+
               aws ecs describe-services \
                 --cluster "${ECS_CLUSTER}" \
-                --services "${ECS_SERVICE}" \
+                --services "${PRODUCTION_SERVICE}" \
                 --query 'services[0].events[0:10].[createdAt,message]' \
                 --output table
+
               exit 1
             fi
 
             sleep "${SLEEP_SECONDS}"
           done
 
-          echo "Timed out waiting for ECS deployment after 15 minutes."
+          echo "Timed out waiting for production deployment."
+
           aws ecs describe-services \
             --cluster "${ECS_CLUSTER}" \
-            --services "${ECS_SERVICE}" \
+            --services "${PRODUCTION_SERVICE}" \
             --query 'services[0].events[0:10].[createdAt,message]' \
             --output table
 
           exit 1
 
-      - name: Confirm deployment was not rolled back
+      - name: Confirm production was not rolled back
         shell: bash
         run: |
           DEPLOYED_TASK_DEFINITION=$(aws ecs describe-services \
             --cluster "${ECS_CLUSTER}" \
-            --services "${ECS_SERVICE}" \
+            --services "${PRODUCTION_SERVICE}" \
             --query 'services[0].deployments[?status==`PRIMARY`].taskDefinition | [0]' \
             --output text)
 
-          echo "Expected: ${TASK_DEFINITION_ARN}"
+          echo "Expected: ${PRODUCTION_TASK_DEFINITION_ARN}"
           echo "Running:  ${DEPLOYED_TASK_DEFINITION}"
 
-          if [ "${DEPLOYED_TASK_DEFINITION}" != "${TASK_DEFINITION_ARN}" ]; then
-            echo "DEPLOYMENT FAILED: ECS rolled back."
+          if [ "${DEPLOYED_TASK_DEFINITION}" != "${PRODUCTION_TASK_DEFINITION_ARN}" ]; then
+            echo "PRODUCTION DEPLOYMENT FAILED: ECS rolled back."
             exit 1
           fi
 
           echo "Production deployment confirmed."
 
-      - name: Verify deployed service
+      - name: Verify production service
         run: |
           aws ecs describe-services \
             --cluster "${ECS_CLUSTER}" \
-            --services "${ECS_SERVICE}" \
-            --query 'services[0].{Status:status,Desired:desiredCount,Running:runningCount,Pending:pendingCount,TaskDefinition:taskDefinition}'
+            --services "${PRODUCTION_SERVICE}" \
+            --query 'services[0].{Status:status,Desired:desiredCount,Running:runningCount,TaskDefinition:taskDefinition}' \
+            --output table
