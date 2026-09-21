@@ -52,7 +52,8 @@ data "aws_iam_policy_document" "github_actions" {
     ]
 
     resources = [
-      "arn:aws:ecs:*:*:service/*/${var.ecs_service_name}"
+      "arn:aws:ecs:*:*:service/*/${var.ecs_service_name}",
+      "arn:aws:ecs:*:*:service/*/${var.project_name}-staging-service"
     ]
   }
 
