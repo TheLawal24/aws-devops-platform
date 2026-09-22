@@ -3,14 +3,6 @@ resource "aws_security_group" "alb" {
   description = "Allow HTTP traffic to the application load balancer"
   vpc_id      = aws_vpc.main.id
 
-  egress {
-    description = "Allow outbound traffic"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
   tags = {
     Name = "${var.project_name}-${var.environment}-alb-sg"
   }
@@ -60,4 +52,14 @@ resource "aws_security_group" "ecs" {
   tags = {
     Name = "${var.project_name}-${var.environment}-ecs-sg"
   }
+}
+
+resource "aws_vpc_security_group_egress_rule" "alb_to_ecs" {
+  security_group_id = aws_security_group.alb.id
+
+  description                  = "Application traffic from ALB to ECS"
+  from_port                    = 8080
+  to_port                      = 8080
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = aws_security_group.ecs.id
 }

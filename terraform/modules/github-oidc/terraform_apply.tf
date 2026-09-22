@@ -162,7 +162,7 @@ data "aws_iam_policy_document" "terraform_apply" {
   }
 
   statement {
-    sid    = "ManageProjectIAM"
+    sid    = "ManageProjectRoles"
     effect = "Allow"
 
     actions = [
@@ -171,21 +171,76 @@ data "aws_iam_policy_document" "terraform_apply" {
       "iam:UpdateAssumeRolePolicy",
       "iam:TagRole",
       "iam:UntagRole",
+      "iam:AttachRolePolicy",
+      "iam:DetachRolePolicy"
+    ]
+
+    resources = [
+      "arn:aws:iam::808935753572:role/${var.project_name}-${var.environment}-*"
+    ]
+  }
+
+  statement {
+    sid    = "ManageProjectPolicies"
+    effect = "Allow"
+
+    actions = [
       "iam:CreatePolicy",
       "iam:DeletePolicy",
       "iam:CreatePolicyVersion",
       "iam:DeletePolicyVersion",
-      "iam:SetDefaultPolicyVersion",
-      "iam:AttachRolePolicy",
-      "iam:DetachRolePolicy",
-      "iam:PassRole",
-      "iam:CreateOpenIDConnectProvider",
+      "iam:SetDefaultPolicyVersion"
+    ]
+
+    resources = [
+      "arn:aws:iam::808935753572:policy/${var.project_name}-${var.environment}-*"
+    ]
+  }
+
+  statement {
+    sid    = "PassECSTaskRoles"
+    effect = "Allow"
+
+    actions = [
+      "iam:PassRole"
+    ]
+
+    resources = [
+      "arn:aws:iam::808935753572:role/${var.project_name}-${var.environment}-ecs-execution-role",
+      "arn:aws:iam::808935753572:role/${var.project_name}-${var.environment}-ecs-task-role"
+    ]
+
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["ecs-tasks.amazonaws.com"]
+    }
+  }
+
+  statement {
+    sid    = "ManageGitHubOIDCProvider"
+    effect = "Allow"
+
+    actions = [
       "iam:DeleteOpenIDConnectProvider",
       "iam:UpdateOpenIDConnectProviderThumbprint",
       "iam:AddClientIDToOpenIDConnectProvider",
       "iam:RemoveClientIDFromOpenIDConnectProvider",
       "iam:TagOpenIDConnectProvider",
       "iam:UntagOpenIDConnectProvider"
+    ]
+
+    resources = [
+      "arn:aws:iam::808935753572:oidc-provider/token.actions.githubusercontent.com"
+    ]
+  }
+
+  statement {
+    sid    = "CreateGitHubOIDCProvider"
+    effect = "Allow"
+
+    actions = [
+      "iam:CreateOpenIDConnectProvider"
     ]
 
     resources = ["*"]
