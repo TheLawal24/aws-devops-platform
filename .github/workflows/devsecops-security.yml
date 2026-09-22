@@ -139,7 +139,6 @@ jobs:
         run: |
           trivy config \
             --severity HIGH,CRITICAL \
-            --no-progress \
             --exit-code 0 \
             --skip-dirs terraform/environments/dev/.terraform \
             --skip-dirs terraform/bootstrap/state/.terraform \
